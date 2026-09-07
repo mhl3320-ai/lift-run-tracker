@@ -105,6 +105,12 @@
   .sublabel{font-size:10.5px; color:var(--sub); font-weight:700; text-transform:uppercase; letter-spacing:.04em; margin-bottom:4px;}
   .subrow .chip{font-size:12px; padding:7px 4px;}
   .equivnote{font-size:12px; color:var(--sub); margin-top:6px; font-style:italic;}
+  .backuptext{width:100%; min-height:90px; background:var(--card2); border:1px solid var(--border); border-radius:10px; color:var(--sub); font-size:11px; font-family:monospace; padding:8px; margin-top:10px;}
+  .filelabel{display:inline-block; background:var(--card2); color:var(--text); border:1px solid var(--border); border-radius:10px; padding:10px 16px; font-size:14.5px; font-weight:700; margin-top:10px;}
+  .filelabel input{display:none;}
+  .backupstatus{font-size:12.5px; margin-top:8px; font-weight:600;}
+  .backupstatus.ok{color:var(--green);}
+  .backupstatus.err{color:var(--red);}
   .tabbar{
     position:fixed; left:0; right:0; bottom:0; height:calc(var(--tab-h) + env(safe-area-inset-bottom));
     padding-bottom:env(safe-area-inset-bottom);
@@ -209,6 +215,28 @@ function setVariantChoice(slotId, groupId, variantId){
   p.variants[groupId] = variantId;
   varPrefs[slotId] = p;
   saveJSON(LS_VARPREF, varPrefs);
+}
+
+/* ---------------- BACKUP / RESTORE ---------------- */
+function gatherBackup(){
+  return {
+    app: 'lift-run-tracker',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    settings: loadJSON(LS_SETTINGS, null),
+    logs: loadJSON(LS_LOGS, {}),
+    bwLog: loadJSON(LS_BW, []),
+    mileLog: loadJSON(LS_MILE, []),
+    varPrefs: loadJSON(LS_VARPREF, {})
+  };
+}
+function restoreBackup(data){
+  if(!data || typeof data!=='object' || !data.logs) throw new Error('Not a valid backup file');
+  if(data.settings) saveJSON(LS_SETTINGS, data.settings);
+  saveJSON(LS_LOGS, data.logs || {});
+  saveJSON(LS_BW, data.bwLog || []);
+  saveJSON(LS_MILE, data.mileLog || []);
+  saveJSON(LS_VARPREF, data.varPrefs || {});
 }
 
 /* ---------------- DATE HELPERS ---------------- */
@@ -531,6 +559,15 @@ function renderOnboarding(){
     saveJSON(LS_SETTINGS, settings);
     render();
   });
+
+  var divider = document.createElement('div');
+  divider.style.cssText = 'margin-top:22px; padding-top:18px; border-top:1px solid var(--border); display:flex; flex-direction:column; align-items:center; gap:8px;';
+  divider.innerHTML = '<div style="color:var(--sub); font-size:13px;">Already have a backup?</div>';
+  var errEl = document.createElement('div'); errEl.className='backupstatus err';
+  divider.appendChild(buildRestoreControl(function(msg){ errEl.textContent = msg; }));
+  divider.appendChild(errEl);
+  wrap.appendChild(divider);
+
   return wrap;
 }
 
@@ -997,6 +1034,85 @@ function logForm(idPrefix, placeholder, type, onAdd){
   return wrap;
 }
 
+function renderBackupCard(){
+  var c = document.createElement('div'); c.className='card';
+  c.innerHTML = '<div style="font-weight:600; margin-bottom:8px;">Backup & Restore</div>'+
+    '<div class="meta">Your logs live only in Safari on this phone — nothing is synced to iCloud automatically. Export a backup now and then (especially before clearing Safari data, resetting your phone, or switching devices), and save the file to iCloud Drive, Files, or email it to yourself.</div>';
+
+  var btnRow = document.createElement('div'); btnRow.style.display='flex'; btnRow.style.gap='8px'; btnRow.style.marginTop='12px'; btnRow.style.flexWrap='wrap';
+
+  var shareBtn = document.createElement('button'); shareBtn.className='btn'; shareBtn.textContent='Export Backup';
+  var status = document.createElement('div'); status.className='backupstatus';
+
+  shareBtn.addEventListener('click', function(){
+    var json = JSON.stringify(gatherBackup(), null, 2);
+    var filename = 'lift-run-backup-'+ymd(new Date())+'.json';
+    var blob = new Blob([json], {type:'application/json'});
+    var shared = false;
+    try{
+      var file = new File([blob], filename, {type:'application/json'});
+      if(navigator.canShare && navigator.canShare({files:[file]})){
+        navigator.share({files:[file], title:'Lift+Run Backup'}).catch(function(){});
+        shared = true;
+      }
+    }catch(e){}
+    if(!shared){
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a'); a.href=url; a.download=filename;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(function(){ URL.revokeObjectURL(url); }, 3000);
+    }
+    status.textContent = 'Backup ready — save it somewhere safe.'; status.className='backupstatus ok';
+  });
+  btnRow.appendChild(shareBtn);
+
+  var copyBtn = document.createElement('button'); copyBtn.className='btn secondary'; copyBtn.textContent='Copy as Text';
+  copyBtn.addEventListener('click', function(){
+    var json = JSON.stringify(gatherBackup());
+    var done = function(){ status.textContent='Copied — paste it into Notes or anywhere safe.'; status.className='backupstatus ok'; };
+    var fail = function(){ ta.hidden=false; ta.value=json; ta.select(); status.textContent='Couldn’t auto-copy — select the text below and copy manually.'; status.className='backupstatus err'; };
+    if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(json).then(done).catch(fail); }
+    else { fail(); }
+  });
+  btnRow.appendChild(copyBtn);
+  c.appendChild(btnRow);
+
+  var ta = document.createElement('textarea'); ta.className='backuptext'; ta.readOnly=true; ta.hidden=true;
+  c.appendChild(ta);
+  c.appendChild(status);
+
+  c.appendChild(buildRestoreControl(function(msg){ status.textContent = msg; status.className='backupstatus err'; }));
+
+  return c;
+}
+
+// Reusable file-picker that reads a backup JSON file and restores it. Used in both
+// Settings and onboarding, since a full data wipe can also wipe the start date,
+// which would otherwise strand the user on onboarding with no way back to Settings.
+function buildRestoreControl(onError){
+  var label = document.createElement('label'); label.className='filelabel'; label.textContent='Restore from File';
+  var fileInput = document.createElement('input'); fileInput.type='file'; fileInput.accept='application/json,.json';
+  fileInput.addEventListener('change', function(){
+    var f = fileInput.files[0];
+    if(!f) return;
+    var reader = new FileReader();
+    reader.onload = function(){
+      try{
+        var data = JSON.parse(reader.result);
+        if(!confirm('Restore this backup? It will replace all data currently on this device.')) return;
+        restoreBackup(data);
+        alert('Backup restored.');
+        location.reload();
+      }catch(e){
+        if(onError) onError('Could not read that file as a valid backup.');
+      }
+    };
+    reader.readAsText(f);
+  });
+  label.appendChild(fileInput);
+  return label;
+}
+
 /* ---------------- SETTINGS VIEW ---------------- */
 function renderSettings(){
   var wrap = document.createElement('div');
@@ -1020,16 +1136,18 @@ function renderSettings(){
   c2.innerHTML = '<div style="font-weight:600; margin-bottom:8px;">Data</div><div class="meta">All data is stored locally on this device only (localStorage). Nothing is uploaded anywhere.</div>';
   var resetBtn = document.createElement('button'); resetBtn.className='btn danger'; resetBtn.style.marginTop='12px'; resetBtn.textContent='Reset All Data';
   resetBtn.addEventListener('click', function(){
-    if(confirm('This permanently deletes all logged workouts, bodyweight, and mile times on this device. Continue?')){
+    if(confirm('This permanently deletes all logged workouts, bodyweight, and mile times on this device. Consider exporting a backup first. Continue?')){
       if(confirm('Are you absolutely sure? This cannot be undone.')){
-        localStorage.removeItem(LS_SETTINGS); localStorage.removeItem(LS_LOGS); localStorage.removeItem(LS_BW); localStorage.removeItem(LS_MILE);
-        settings=null; logs={}; bwLog=[]; mileLog=[];
+        localStorage.removeItem(LS_SETTINGS); localStorage.removeItem(LS_LOGS); localStorage.removeItem(LS_BW); localStorage.removeItem(LS_MILE); localStorage.removeItem(LS_VARPREF);
+        settings=null; logs={}; bwLog=[]; mileLog=[]; varPrefs={};
         render();
       }
     }
   });
   c2.appendChild(resetBtn);
   wrap.appendChild(c2);
+
+  wrap.appendChild(renderBackupCard());
 
   var c3 = document.createElement('div'); c3.className='card';
   c3.innerHTML = '<div style="font-weight:600; margin-bottom:6px;">About</div><div class="meta">7-month lifting + running program tracker.<br>Squat goal: 315 lbs • Bench goal: 225 lbs • Mile goal: 5:30</div>';
