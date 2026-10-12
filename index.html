@@ -349,7 +349,7 @@ function variant(id, name, ratio){ return {id:id, name:name, ratio: (ratio===und
 function group(id, name, variants){ return {id:id, name:name, variants:variants}; }
 
 function dayItems(dayKey){
-  if(dayKey==='mon') return [
+  if(dayKey==='lower') return [
     slotItem('mon-rdl', '3 x 8-10', 3, [
       group('rdl','Romanian Deadlift', [
         variant('rdl','Romanian Deadlift',1),
@@ -373,7 +373,7 @@ function dayItems(dayKey){
       group('cablecrunch','Cable Crunch', [ variant('cablecrunch','Cable Crunch',1) ])
     ])
   ];
-  if(dayKey==='tue') return [
+  if(dayKey==='push') return [
     plainItem('incline','Incline DB Press','3 x 8-10',3),
     plainItem('ohp','Seated DB / Machine OHP','3 x 8-10',3),
     plainItem('lateral','Lateral Raise','4 x 12-15',4),
@@ -425,11 +425,18 @@ function dayItems(dayKey){
 }
 
 /* ---------------- DAY CONFIG ---------------- */
+// Monday/Tuesday were swapped (Mon = Bench, Tue = Squat) starting this Monday. Earlier dates keep
+// the original order so sessions logged under it still show up on the day they were done.
+var SCHEDULE_SWAP_START = '2026-10-12';
+function isOriginalOrder(date){ return ymd(date) < SCHEDULE_SWAP_START; }
+
 function dayConfig(date){
   var dow = date.getDay(); // 0 Sun .. 6 Sat
   var week = weekNumber(date);
-  if(dow===1) return {type:'lift', key:'mon', label:'Squat / Lower', main:'squat', week:week};
-  if(dow===2) return {type:'lift', key:'tue', label:'Bench / Upper Push', main:'bench', week:week};
+  var squatDay = {type:'lift', key:'lower', label:'Squat / Lower', main:'squat', week:week};
+  var benchDay = {type:'lift', key:'push', label:'Bench / Upper Push', main:'bench', week:week};
+  if(dow===1) return isOriginalOrder(date) ? squatDay : benchDay;
+  if(dow===2) return isOriginalOrder(date) ? benchDay : squatDay;
   if(dow===3) return {type:'run', key:'wed', label:'Speed / Intervals', table:'intervals', week:week};
   if(dow===4) return {type:'lift', key:'thu', label:'Pull + Secondary Bench', main:'benchSecondary', week:week};
   if(dow===5) return {type:'run', key:'fri', label:'Tempo / Threshold', table:'tempo', week:week};
@@ -668,10 +675,10 @@ function renderLiftCard(cfg, dateStr){
   var exList = [];
   if(cfg.main==='squat'){
     exList.push(mainExercise('squat','squat','Back Squat', cfg.week, dateStr));
-    dayItems('mon').forEach(function(item){ exList.push(renderDayItem(item, dateStr)); });
+    dayItems('lower').forEach(function(item){ exList.push(renderDayItem(item, dateStr)); });
   } else if(cfg.main==='bench'){
     exList.push(mainExercise('bench','bench','Bench Press', cfg.week, dateStr));
-    dayItems('tue').forEach(function(item){ exList.push(renderDayItem(item, dateStr)); });
+    dayItems('push').forEach(function(item){ exList.push(renderDayItem(item, dateStr)); });
   } else if(cfg.main==='benchSecondary'){
     exList.push(secondaryBenchExercise(cfg.week, dateStr));
     dayItems('thu').forEach(function(item){ exList.push(renderDayItem(item, dateStr)); });
@@ -684,24 +691,24 @@ function renderDayItem(item, dateStr){
   return item.kind==='slot' ? renderSlotBlock(item, dateStr) : accessoryExercise(item, dateStr);
 }
 
-function tuesdayDateForWeek(dateStr){
-  var d = parseYMD(dateStr);
-  var wkStart = startOfWeek(d);
-  return ymd(addDays(wkStart,1)); // Monday+1 = Tuesday
+// The week's main bench day: Monday under the current schedule, Tuesday for weeks before the swap.
+function mainBenchDateForWeek(dateStr){
+  var wkStart = startOfWeek(parseYMD(dateStr));
+  return isOriginalOrder(wkStart) ? {date: ymd(addDays(wkStart,1)), name:'Tuesday'} : {date: ymd(wkStart), name:'Monday'};
 }
 
 function secondaryBenchExercise(week, dateStr){
   var exId = 'benchSecondary';
-  var tue = tuesdayDateForWeek(dateStr);
-  var tueLog = getDayLog(tue).exercises['bench'];
+  var src = mainBenchDateForWeek(dateStr);
+  var srcLog = getDayLog(src.date).exercises['bench'];
   var baseWeight;
   var baseNote;
-  if(tueLog && tueLog.sets && tueLog.sets.length && tueLog.sets[0].w){
-    baseWeight = tueLog.sets[0].w;
-    baseNote = 'from this week’s Tuesday top set';
+  if(srcLog && srcLog.sets && srcLog.sets.length && srcLog.sets[0].w){
+    baseWeight = srcLog.sets[0].w;
+    baseNote = 'from this week’s '+src.name+' top set';
   } else {
     baseWeight = mainLiftTarget('bench', week).weight;
-    baseNote = 'from this week’s bench target (Tuesday not logged yet)';
+    baseNote = 'from this week’s bench target ('+src.name+' not logged yet)';
   }
   var secWeight = round(baseWeight*0.7, 2.5);
   return exerciseBlock({
